@@ -7,7 +7,6 @@ import { getAvatarIcon } from '../utils/helpers.js';
 export default function DashboardPage({ onNavigate }) {
   const { user, updateLocalMetrics } = useAuth();
   const [profileData, setProfileData] = useState(null);
-  const [loading, setLoading] = useState(true);
   const [savingAvatar, setSavingAvatar] = useState(false);
   const [selectedAvatar, setSelectedAvatar] = useState(user?.avatar || 'adventurer');
   const [message, setMessage] = useState('');
@@ -22,8 +21,6 @@ export default function DashboardPage({ onNavigate }) {
         }
       } catch (err) {
         console.warn('Could not load profile:', err.message);
-      } finally {
-        setLoading(false);
       }
     }
     loadData();
@@ -41,7 +38,7 @@ export default function DashboardPage({ onNavigate }) {
           updateLocalMetrics(user.metrics);
         }
       }
-    } catch (err) {
+    } catch {
       setMessage('Failed to update avatar.');
     } finally {
       setSavingAvatar(false);

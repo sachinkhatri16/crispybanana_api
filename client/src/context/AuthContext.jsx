@@ -39,6 +39,19 @@ export function AuthProvider({ children }) {
   const [token, setToken] = useState(() => localStorage.getItem('banana_token') || null);
   const [loading, setLoading] = useState(true);
 
+  const logout = useCallback(async () => {
+    try {
+      await authService.logout();
+    } catch {
+      // Always clear local session state even if the network logout request fails
+    } finally {
+      setUser(null);
+      setToken(null);
+      localStorage.removeItem('banana_token');
+      localStorage.removeItem('banana_user');
+    }
+  }, []);
+
   // Validate session on mount
   useEffect(() => {
     async function checkAuth() {
@@ -62,7 +75,7 @@ export function AuthProvider({ children }) {
       }
     }
     checkAuth();
-  }, [token]);
+  }, [token, logout]);
 
   const login = useCallback(async (identifier, password) => {
     const res = await authService.login(identifier, password);
@@ -88,19 +101,6 @@ export function AuthProvider({ children }) {
       return registeredUser;
     }
     throw new Error(res.message || 'Registration failed');
-  }, []);
-
-  const logout = useCallback(async () => {
-    try {
-      await authService.logout();
-    } catch {
-      // Always clear local session state even if the network logout request fails
-    } finally {
-      setUser(null);
-      setToken(null);
-      localStorage.removeItem('banana_token');
-      localStorage.removeItem('banana_user');
-    }
   }, []);
 
   const updateLocalMetrics = useCallback((metrics) => {

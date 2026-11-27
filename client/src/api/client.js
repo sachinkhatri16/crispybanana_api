@@ -17,22 +17,18 @@ export async function apiRequest(endpoint, options = {}) {
     headers,
   };
 
-  try {
-    const response = await fetch(`${API_BASE}${endpoint}`, config);
-    const data = await response.json();
+  const response = await fetch(`${API_BASE}${endpoint}`, config);
+  const data = await response.json();
 
-    if (!response.ok) {
-      if (response.status === 401 && token) {
-        localStorage.removeItem('banana_token');
-        localStorage.removeItem('banana_user');
-      }
-      throw new Error(data.message || 'Request failed');
+  if (!response.ok) {
+    if (response.status === 401 && token) {
+      localStorage.removeItem('banana_token');
+      localStorage.removeItem('banana_user');
     }
-
-    return data;
-  } catch (error) {
-    throw error;
+    throw new Error(data.message || 'Request failed');
   }
+
+  return data;
 }
 
 export const authApi = {
