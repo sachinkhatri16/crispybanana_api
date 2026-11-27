@@ -1,3 +1,26 @@
+/**
+ * ============================================================================
+ * @project     Banana Rush Enterprise Puzzle Application
+ * @unit        CIS046-3 Software For Enterprise (Assignment 1)
+ * @author      Sachin Khatri
+ * @file        server/src/index.js
+ *
+ * @description Express application entry point configuring CORS, lightweight
+ *              cookie parsing, body parsers, health checks, API routes, and
+ *              graceful Prisma shutdown.
+ *
+ * @references
+ * 1. Express Application Architecture:
+ *    OpenJS Foundation, "Express 4.x API Reference", https://expressjs.com/
+ * 2. JWT & HTTP-Only Cookie Transport:
+ *    IETF RFC 7519 (JSON Web Token) & MDN HTTP Cookies
+ * 3. Credential Security Standards:
+ *    OWASP Foundation, "Password Storage Cheat Sheet",
+ *    https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html
+ * 4. Generative AI Acknowledgement:
+ *    Middleware ordering and cookie parser integration assisted by AI tools.
+ * ============================================================================
+ */
 import express from 'express';
 import dotenv from 'dotenv';
 import path from 'path';
@@ -8,6 +31,7 @@ import corsMiddleware from './config/cors.js';
 import prisma from './config/prisma.js';
 import logger from './utils/logger.js';
 import routes from './routes/index.js';
+import { cookieParser } from './middleware/auth.middleware.js';
 import notFoundHandler from './middleware/notFound.middleware.js';
 import errorHandler from './middleware/error.middleware.js';
 
@@ -20,9 +44,10 @@ const PORT = process.env.PORT || 5000;
 // Security & CORS middleware
 app.use(corsMiddleware);
 
-// Body parsers
+// Body & cookie parsers
 app.use(express.json({ limit: '1mb' }));
 app.use(express.urlencoded({ extended: true }));
+app.use(cookieParser);
 
 // Request logging in development
 if (process.env.NODE_ENV !== 'test') {
