@@ -1,3 +1,25 @@
+/**
+ * ============================================================================
+ * @project     Banana Rush Enterprise Puzzle Application
+ * @unit        CIS046-3 Software For Enterprise (Assignment 1)
+ * @author      Sachin Khatri
+ * @file        server/src/config/db.js
+ *
+ * @description Configures and exports a PostgreSQL connection pool using
+ *              node-postgres (pg) with timeout guards and idle error logging.
+ *
+ * @references
+ * 1. node-postgres Connection Pooling:
+ *    Brian Carlson, "node-postgres (pg.Pool) Documentation", https://node-postgres.com/apis/pool
+ * 2. PostgreSQL Environment & Pool Sizing:
+ *    PostgreSQL Global Development Group, "Database Connection Management", https://www.postgresql.org/docs/current/runtime-config-connection.html
+ * 3. Node.js ESM Path Resolution & dotenv:
+ *    Node.js Foundation, "URL / Path APIs", https://nodejs.org/api/url.html
+ * 4. Generative AI Acknowledgement:
+ *    Pool configuration and academic referencing comments were refined with
+ *    iterative assistance from Claude Code & Gemini CLI.
+ * ============================================================================
+ */
 import pkg from 'pg';
 import dotenv from 'dotenv';
 import path from 'path';
