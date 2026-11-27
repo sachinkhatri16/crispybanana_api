@@ -1,11 +1,5 @@
 import { useState, useEffect } from 'react';
 
-const DEMO_PUZZLE = {
-  equation1: { items: ['🍌', '+', '🍌', '+', '🍌'], result: 15, solved: '🍌 = 5' },
-  equation2: { items: ['🍌', '+', '🐵'], result: 12, solved: '🐵 = 7' },
-  equation3: { items: ['🐵', '-', '🍌', '=', '?'], result: '?', solution: 2 },
-};
-
 export default function InteractiveDemo({ onStartPlaying }) {
   const [activeStep, setActiveStep] = useState(1);
   const [demoTimer, setDemoTimer] = useState(60);

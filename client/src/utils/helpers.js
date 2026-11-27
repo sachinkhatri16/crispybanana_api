@@ -1,4 +1,4 @@
-import { TIMER_TIERS, AVATAR_OPTIONS, HINT_COSTS } from './constants.js';
+import { TIMER_TIERS, AVATAR_OPTIONS } from './constants.js';
 
 export const getTimerTier = (seconds) => {
   if (seconds >= TIMER_TIERS.TIER_1.minTime) return TIMER_TIERS.TIER_1;
