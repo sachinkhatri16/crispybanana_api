@@ -1,11 +1,91 @@
+/**
+ * ============================================================================
+ * @project     Banana Rush Enterprise Puzzle Application
+ * @unit        CIS046-3 Software For Enterprise (Assignment 1)
+ * @author      Sachin Khatri
+ * @file        server/src/controllers/game.controller.js
+ *
+ * @description Integrates third-party Marc Conrad Banana API via a resilient
+ *              Backend-for-Frontend (BFF) gateway with regex PHP notice
+ *              sanitization, circuit breaker / offline cache fallback,
+ *              PostgreSQL metrics persistence via Prisma ORM, and asynchronous
+ *              EventEmitter dispatching for gameplay events.
+ *
+ * @references
+ * 1. Banana API Documentation & Specification:
+ *    Marc Conrad (2023), "The Banana API", https://marcconrad.com/uob/banana/doc.php
+ * 2. Enterprise Integration Patterns (BFF Pattern):
+ *    Martin Fowler, "Backend for Frontend", https://martinfowler.com/articles/bff.html
+ * 3. Node.js Event-Driven Architecture:
+ *    Node.js Foundation, "Events Documentation", https://nodejs.org/api/events.html
+ * 4. Generative AI Acknowledgement:
+ *    Portions of regex response sanitization, circuit breaker fallback logic,
+ *    and event-driven dispatching were developed with iterative assistance
+ *    from generative AI tools.
+ * ============================================================================
+ */
 import prisma from '../config/prisma.js';
 import { sendSuccess, sendError } from '../utils/response.utils.js';
 import logger from '../utils/logger.js';
+import gameEvents from '../events/gameEventEmitter.js';
+
+const BANANA_API_URL = 'https://marcconrad.com/uob/banana/api.php?out=json';
+const UPSTREAM_TIMEOUT_MS = 5000;
+const MAX_CACHED_PUZZLES = 20;
+
+const FALLBACK_PUZZLES = [
+  { question: 'https://www.sanfoh.com/uob/banana/data/t0d68eab90150e15dc98df16392n84.png', solution: 4 },
+  { question: 'https://www.sanfoh.com/uob/banana/data/t43a6729c7d812eb12702a46660n27.png', solution: 7 },
+  { question: 'https://www.sanfoh.com/uob/banana/data/t521e7aff332c918ee9da692991n59.png', solution: 9 },
+];
+
+const cachedPuzzles = [...FALLBACK_PUZZLES];
+
+const circuitBreaker = {
+  state: 'CLOSED',
+  failures: 0,
+  failureThreshold: 3,
+  cooldownMs: 30000,
+  openedAt: 0,
+};
+
+const pickFallbackPuzzle = () => {
+  const pool = cachedPuzzles.length > 0 ? cachedPuzzles : FALLBACK_PUZZLES;
+  return pool[Math.floor(Math.random() * pool.length)];
+};
+
+const cacheValidatedPuzzle = (puzzle) => {
+  const exists = cachedPuzzles.some((item) => item.question === puzzle.question);
+  if (exists) return;
+
+  if (cachedPuzzles.length >= MAX_CACHED_PUZZLES) {
+    cachedPuzzles.shift();
+  }
+  cachedPuzzles.push(puzzle);
+};
 
 export const getPuzzle = async (req, res, next) => {
+  if (circuitBreaker.state === 'OPEN') {
+    const elapsed = Date.now() - circuitBreaker.openedAt;
+    if (elapsed < circuitBreaker.cooldownMs) {
+      logger.warn(
+        `Banana API circuit breaker OPEN (${Math.ceil((circuitBreaker.cooldownMs - elapsed) / 1000)}s remaining). Serving cached fallback puzzle.`
+      );
+      return sendSuccess(res, pickFallbackPuzzle(), 'Puzzle loaded');
+    }
+    circuitBreaker.state = 'HALF_OPEN';
+  }
+
   try {
-    const BANANA_API = 'https://marcconrad.com/uob/banana/api.php?out=json';
-    const response = await fetch(`${BANANA_API}&t=${Date.now()}`);
+    const response = await fetch(`${BANANA_API_URL}&t=${Date.now()}`, {
+      signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
+      headers: { Accept: 'application/json' },
+    });
+
+    if (!response.ok) {
+      throw new Error(`Upstream Banana API returned HTTP ${response.status}`);
+    }
+
     const text = await response.text();
 
     // Sanitize any PHP notices, warnings, or HTML tags (<br /> <b>Warning...)
@@ -14,21 +94,45 @@ export const getPuzzle = async (req, res, next) => {
       throw new Error('Malformed puzzle response from upstream API');
     }
 
-    const data = JSON.parse(jsonMatch[0]);
-    if (!data.question || data.solution === undefined) {
-      throw new Error('Puzzle format missing question or solution');
+    const raw = JSON.parse(jsonMatch[0]);
+    const parsedSolution = Number(raw?.solution);
+    if (
+      typeof raw?.question !== 'string' ||
+      !raw.question.trim() ||
+      raw?.solution === undefined ||
+      raw?.solution === null ||
+      raw?.solution === '' ||
+      !Number.isInteger(parsedSolution)
+    ) {
+      throw new Error('Puzzle format missing valid question or solution');
     }
 
-    return sendSuccess(res, data, 'Puzzle retrieved successfully');
+    const sanitizedPuzzle = {
+      question: raw.question.trim(),
+      solution: parsedSolution,
+    };
+
+    circuitBreaker.failures = 0;
+    circuitBreaker.state = 'CLOSED';
+    cacheValidatedPuzzle(sanitizedPuzzle);
+
+    return sendSuccess(res, sanitizedPuzzle, 'Puzzle retrieved successfully');
   } catch (error) {
-    logger.warn(`Upstream Banana API warning: ${error.message}. Serving resilient puzzle.`);
-    const fallbackPuzzles = [
-      { question: 'https://www.sanfoh.com/uob/banana/data/t0d68eab90150e15dc98df16392n84.png', solution: 4 },
-      { question: 'https://www.sanfoh.com/uob/banana/data/t43a6729c7d812eb12702a46660n27.png', solution: 7 },
-      { question: 'https://www.sanfoh.com/uob/banana/data/t521e7aff332c918ee9da692991n59.png', solution: 9 },
-    ];
-    const picked = fallbackPuzzles[Math.floor(Math.random() * fallbackPuzzles.length)];
-    return sendSuccess(res, picked, 'Puzzle loaded');
+    circuitBreaker.failures += 1;
+    if (
+      circuitBreaker.state === 'HALF_OPEN' ||
+      circuitBreaker.failures >= circuitBreaker.failureThreshold
+    ) {
+      circuitBreaker.state = 'OPEN';
+      circuitBreaker.openedAt = Date.now();
+      logger.warn(
+        `Banana API circuit breaker tripped OPEN after ${circuitBreaker.failures} failure(s): ${error.message}`
+      );
+    } else {
+      logger.warn(`Upstream Banana API warning: ${error.message}. Serving resilient puzzle.`);
+    }
+
+    return sendSuccess(res, pickFallbackPuzzle(), 'Puzzle loaded');
   }
 };
 
@@ -71,6 +175,12 @@ export const useHint = async (req, res, next) => {
     logger.info(
       `User ${userId} unlocked Hint ${hintLevel}: -${cost} pts deducted. New total: ${updated.total_score}`
     );
+
+    gameEvents.emit('hint:unlocked', {
+      userId,
+      hintLevel,
+      cost,
+    });
 
     return sendSuccess(
       res,
@@ -176,6 +286,13 @@ export const recordRound = async (req, res, next) => {
     });
 
     logger.debug(`Round recorded for user ${userId}: +${awarded} pts, streak: ${nextStreak}`);
+
+    gameEvents.emit('round:completed', {
+      userId,
+      scoreAwarded: awarded,
+      streak: nextStreak,
+      isCorrect: roundCorrect,
+    });
 
     return sendSuccess(
       res,
