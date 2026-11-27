@@ -1,3 +1,25 @@
+/**
+ * ============================================================================
+ * @project     Banana Rush Enterprise Puzzle Application
+ * @unit        CIS046-3 Software For Enterprise (Assignment 1)
+ * @author      Sachin Khatri
+ * @file        server/src/controllers/user.controller.js
+ *
+ * @description Handles authenticated user profile retrieval, avatar updates,
+ *              and recent game round history queries via Prisma ORM.
+ *
+ * @references
+ * 1. Prisma Client CRUD & Relational Queries:
+ *    Prisma Data, "Prisma Client API Reference", https://www.prisma.io/docs/orm/prisma-client
+ * 2. Express.js Middleware & Request Handling:
+ *    OpenJS Foundation, "Express Routing & Controllers", https://expressjs.com/en/guide/routing.html
+ * 3. Access Control & Scoped User Queries:
+ *    OWASP Foundation, "Insecure Direct Object Reference Prevention Cheat Sheet"
+ * 4. Generative AI Acknowledgement:
+ *    Documentation structure and Prisma query projections were refined with
+ *    iterative assistance from Claude Code & Gemini CLI.
+ * ============================================================================
+ */
 import prisma from '../config/prisma.js';
 import { sendSuccess, sendError } from '../utils/response.utils.js';
 

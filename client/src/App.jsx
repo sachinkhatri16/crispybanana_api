@@ -1,3 +1,27 @@
+/**
+ * ============================================================================
+ * @project     Banana Rush Enterprise Puzzle Application
+ * @unit        CIS046-3 Software For Enterprise (Assignment 1)
+ * @author      Sachin Khatri
+ * @file        client/src/App.jsx
+ *
+ * @description Root React application orchestrating virtual identity state,
+ *              event-driven gameplay (SyntheticEvents & keyboard listeners),
+ *              drift-resistant 60s countdown scoring, step-wise hints, and
+ *              resilient Banana API puzzle loading.
+ *
+ * @references
+ * 1. React Hooks & SyntheticEvent Delegation:
+ *    Meta Platforms, "React Reference Overview & Responding to Events", https://react.dev/reference/react
+ * 2. Banana API Specification:
+ *    Marc Conrad (2023), "The Banana API", https://marcconrad.com/uob/banana/doc.php
+ * 3. Web APIs (Fetch API, Window Timers & High-Resolution Timeouts):
+ *    MDN Web Docs, "Using the Fetch API" & "setInterval()", https://developer.mozilla.org/
+ * 4. Generative AI Acknowledgement:
+ *    Portions of React state orchestration, regex sanitization fallback, and
+ *    documentation headers were refined with assistance from Claude Code & Gemini CLI.
+ * ============================================================================
+ */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import useAuth from './hooks/useAuth.js';
 import Navbar from './components/Navbar.jsx';
