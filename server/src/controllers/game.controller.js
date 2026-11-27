@@ -26,6 +26,7 @@
  */
 import prisma from '../config/prisma.js';
 import { sendSuccess, sendError } from '../utils/response.utils.js';
+import { signPuzzleToken, verifyPuzzleToken } from '../utils/jwt.utils.js';
 import logger from '../utils/logger.js';
 import gameEvents from '../events/gameEventEmitter.js';
 
@@ -64,6 +65,63 @@ const cacheValidatedPuzzle = (puzzle) => {
   cachedPuzzles.push(puzzle);
 };
 
+/**
+ * Signs the authoritative puzzle question & solution into a short-lived JWT
+ * and strips `solution` so the client never receives the answer ahead of time.
+ */
+const buildPuzzleResponse = (puzzle) => ({
+  question: puzzle.question,
+  puzzleToken: signPuzzleToken({
+    question: puzzle.question,
+    solution: puzzle.solution,
+  }),
+});
+
+/**
+ * Verifies a client-supplied puzzleToken and extracts its authoritative payload.
+ */
+const extractVerifiedPuzzle = (puzzleToken) => {
+  const decoded = verifyPuzzleToken(puzzleToken);
+  if (
+    !decoded ||
+    typeof decoded.question !== 'string' ||
+    !decoded.question.trim() ||
+    decoded.solution === undefined ||
+    decoded.solution === null ||
+    decoded.solution === ''
+  ) {
+    return null;
+  }
+
+  const parsedSolution = Number(decoded.solution);
+  if (!Number.isInteger(parsedSolution)) {
+    return null;
+  }
+
+  return {
+    question: decoded.question.trim(),
+    solution: parsedSolution,
+  };
+};
+
+/**
+ * Computes hint text server-side from the verified solution digit.
+ */
+const computeHintText = (hintLevel, sol) => {
+  if (hintLevel === 1) {
+    return sol <= 4
+      ? 'Range: The digit is LOW (0 to 4).'
+      : 'Range: The digit is HIGH (5 to 9).';
+  }
+  if (hintLevel === 2) {
+    return sol % 2 === 0
+      ? 'Parity: The missing digit is EVEN.'
+      : 'Parity: The missing digit is ODD.';
+  }
+  const alt = (sol + 2) % 10;
+  return `Elimination: It is either ${Math.min(sol, alt)} or ${Math.max(sol, alt)}.`;
+};
+
 export const getPuzzle = async (req, res, next) => {
   if (circuitBreaker.state === 'OPEN') {
     const elapsed = Date.now() - circuitBreaker.openedAt;
@@ -71,7 +129,7 @@ export const getPuzzle = async (req, res, next) => {
       logger.warn(
         `Banana API circuit breaker OPEN (${Math.ceil((circuitBreaker.cooldownMs - elapsed) / 1000)}s remaining). Serving cached fallback puzzle.`
       );
-      return sendSuccess(res, pickFallbackPuzzle(), 'Puzzle loaded');
+      return sendSuccess(res, buildPuzzleResponse(pickFallbackPuzzle()), 'Puzzle loaded');
     }
     circuitBreaker.state = 'HALF_OPEN';
   }
@@ -116,7 +174,7 @@ export const getPuzzle = async (req, res, next) => {
     circuitBreaker.state = 'CLOSED';
     cacheValidatedPuzzle(sanitizedPuzzle);
 
-    return sendSuccess(res, sanitizedPuzzle, 'Puzzle retrieved successfully');
+    return sendSuccess(res, buildPuzzleResponse(sanitizedPuzzle), 'Puzzle retrieved successfully');
   } catch (error) {
     circuitBreaker.failures += 1;
     if (
@@ -132,19 +190,25 @@ export const getPuzzle = async (req, res, next) => {
       logger.warn(`Upstream Banana API warning: ${error.message}. Serving resilient puzzle.`);
     }
 
-    return sendSuccess(res, pickFallbackPuzzle(), 'Puzzle loaded');
+    return sendSuccess(res, buildPuzzleResponse(pickFallbackPuzzle()), 'Puzzle loaded');
   }
 };
 
 export const useHint = async (req, res, next) => {
   try {
     const userId = req.user.id;
-    const { hintLevel } = req.body;
+    const { hintLevel, puzzleToken } = req.body;
+    const parsedHintLevel = Number(hintLevel);
     const costs = { 1: 10, 2: 15, 3: 20 };
-    const cost = costs[hintLevel];
+    const cost = Number.isInteger(parsedHintLevel) ? costs[parsedHintLevel] : undefined;
 
     if (!cost) {
       return sendError(res, 'Invalid hint option. Must be 1, 2, or 3.', 400);
+    }
+
+    const verifiedPuzzle = extractVerifiedPuzzle(puzzleToken);
+    if (!verifiedPuzzle) {
+      return sendError(res, 'Invalid or expired puzzle token. Please load a new puzzle.', 400);
     }
 
     const metrics = await prisma.user_metrics.findUnique({
@@ -172,25 +236,28 @@ export const useHint = async (req, res, next) => {
       },
     });
 
+    const hintText = computeHintText(parsedHintLevel, verifiedPuzzle.solution);
+
     logger.info(
-      `User ${userId} unlocked Hint ${hintLevel}: -${cost} pts deducted. New total: ${updated.total_score}`
+      `User ${userId} unlocked Hint ${parsedHintLevel}: -${cost} pts deducted. New total: ${updated.total_score}`
     );
 
     gameEvents.emit('hint:unlocked', {
       userId,
-      hintLevel,
+      hintLevel: parsedHintLevel,
       cost,
     });
 
     return sendSuccess(
       res,
       {
-        hintLevel,
+        hintLevel: parsedHintLevel,
         costDeducted: cost,
+        hintText,
         total_score: updated.total_score,
         metrics: updated,
       },
-      `Hint ${hintLevel} unlocked! -${cost} points deducted from your score.`
+      `Hint ${parsedHintLevel} unlocked! -${cost} points deducted from your score.`
     );
   } catch (error) {
     next(error);
@@ -201,42 +268,40 @@ export const recordRound = async (req, res, next) => {
   try {
     const userId = req.user.id;
     const {
-      puzzleUrl,
-      solution,
+      puzzleToken,
       userAnswer,
-      isCorrect,
-      scoreAwarded,
       timeLimitSeconds = 60,
       timeTakenMs,
       status = 'completed',
     } = req.body;
 
-    const parsedSolution = solution !== undefined && solution !== null ? parseInt(solution, 10) : 0;
-    const parsedUserAnswer =
+    const verifiedPuzzle = extractVerifiedPuzzle(puzzleToken);
+    if (!verifiedPuzzle) {
+      return sendError(res, 'Invalid or expired puzzle token. Please load a new puzzle.', 400);
+    }
+
+    const puzzleUrl = verifiedPuzzle.question;
+    const parsedSolution = verifiedPuzzle.solution;
+
+    const rawUserAnswer =
       userAnswer !== undefined && userAnswer !== null && userAnswer !== ''
         ? parseInt(userAnswer, 10)
         : null;
-    const awarded = parseInt(scoreAwarded || 0, 10);
-    const timeTaken = timeTakenMs ? parseInt(timeTakenMs, 10) : null;
-    const roundCorrect = Boolean(isCorrect);
+    const parsedUserAnswer = Number.isInteger(rawUserAnswer) ? rawUserAnswer : null;
 
-    // Save game round via Prisma
-    const round = await prisma.game_rounds.create({
-      data: {
-        user_id: userId,
-        puzzle_url: puzzleUrl || 'https://marcconrad.com/uob/banana/',
-        solution: parsedSolution,
-        user_answer: parsedUserAnswer,
-        is_correct: roundCorrect,
-        score_awarded: awarded,
-        time_limit_seconds: timeLimitSeconds,
-        time_taken_ms: timeTaken,
-        status,
-        completed_at: new Date(),
-      },
-    });
+    const parsedTimeLimit =
+      Number.isFinite(Number(timeLimitSeconds)) && Number(timeLimitSeconds) > 0
+        ? parseInt(timeLimitSeconds, 10)
+        : 60;
+    const timeTaken =
+      timeTakenMs !== undefined && timeTakenMs !== null && Number.isFinite(Number(timeTakenMs))
+        ? Math.max(0, parseInt(timeTakenMs, 10))
+        : null;
 
-    // Fetch existing user metrics or create defaults
+    const roundCorrect =
+      status !== 'timeout' && parsedUserAnswer !== null && parsedUserAnswer === parsedSolution;
+
+    // Fetch existing user metrics before scoring so streak bonus is authoritative
     const currentMetrics = await prisma.user_metrics.findUnique({
       where: { user_id: userId },
     });
@@ -248,6 +313,33 @@ export const recordRound = async (req, res, next) => {
     const existingStreak = currentMetrics?.current_streak || 0;
     const existingBestStreak = currentMetrics?.best_streak || 0;
     const existingFastest = currentMetrics?.fastest_solve_ms;
+
+    let basePoints = 0;
+    let streakBonus = 0;
+    let awarded = 0;
+    if (roundCorrect) {
+      const elapsedSec = Math.max(0, Math.floor((timeTaken || 0) / 1000));
+      const timeLeft = Math.max(0, parsedTimeLimit - elapsedSec);
+      basePoints = timeLeft >= 40 ? 15 : timeLeft >= 20 ? 10 : 5;
+      streakBonus = existingStreak * 2;
+      awarded = basePoints + streakBonus;
+    }
+
+    // Save game round via Prisma
+    const round = await prisma.game_rounds.create({
+      data: {
+        user_id: userId,
+        puzzle_url: puzzleUrl,
+        solution: parsedSolution,
+        user_answer: parsedUserAnswer,
+        is_correct: roundCorrect,
+        score_awarded: awarded,
+        time_limit_seconds: parsedTimeLimit,
+        time_taken_ms: timeTaken,
+        status,
+        completed_at: new Date(),
+      },
+    });
 
     const nextTotalGames = existingTotalGames + 1;
     const nextWins = existingTotalWins + (roundCorrect ? 1 : 0);
@@ -297,9 +389,13 @@ export const recordRound = async (req, res, next) => {
     return sendSuccess(
       res,
       {
-        roundId: round.id,
+        round,
         metrics: updatedMetrics,
         pointsAdded: awarded,
+        basePoints,
+        streakBonus,
+        isCorrect: roundCorrect,
+        solution: parsedSolution,
         streak: nextStreak,
       },
       'Game round recorded successfully'
