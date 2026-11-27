@@ -30,10 +30,9 @@ import RegisterPage from './pages/RegisterPage.jsx';
 import DashboardPage from './pages/DashboardPage.jsx';
 import InteractiveDemo from './components/InteractiveDemo.jsx';
 import { gameService } from './api/services.js';
-import { BANANA_API_URL, ROUND_SECONDS } from './utils/constants.js';
+import { ROUND_SECONDS } from './utils/constants.js';
 import {
   getTimerTier,
-  calculateRoundScore,
   formatTime,
   getAvatarIcon,
 } from './utils/helpers.js';
@@ -52,6 +51,7 @@ function App() {
   const [rounds, setRounds] = useState(0);
   const [message, setMessage] = useState(null);
   const [isShaking, setIsShaking] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   // Step-wise hint state
   const [hintLevel, setHintLevel] = useState(0);
@@ -64,6 +64,7 @@ function App() {
 
   const [showGuide, setShowGuide] = useState(false);
   const inputRef = useRef(null);
+  const isSubmittingRef = useRef(false);
 
   const playerName = user ? user.username : 'Guest Player';
 
@@ -114,29 +115,11 @@ function App() {
     setPuzzle(null); // Clear previous puzzle to avoid overlapping with errors
 
     try {
-      let data = null;
+      const serverRes = await gameService.getPuzzle();
+      const data = serverRes?.success ? serverRes.data : null;
 
-      // 1. Try our server proxy first (clean & resilient against upstream PHP warnings)
-      try {
-        const serverRes = await gameService.getPuzzle();
-        if (serverRes.success && serverRes.data?.question) {
-          data = serverRes.data;
-        }
-      } catch {
-        // Fallback below
-      }
-
-      // 2. If proxy didn't return, fetch from Banana API and sanitize JSON
-      if (!data) {
-        const response = await fetch(`${BANANA_API_URL}&t=${Date.now()}`);
-        const text = await response.text();
-        const jsonMatch = text.match(/\{[\s\S]*\}/);
-        if (!jsonMatch) throw new Error('Invalid puzzle format from server');
-        data = JSON.parse(jsonMatch[0]);
-      }
-
-      if (!data || !data.question || data.solution === undefined) {
-        throw new Error('Puzzle format missing question or solution.');
+      if (!data || !data.question || !data.puzzleToken) {
+        throw new Error('Puzzle format missing question or puzzle token.');
       }
 
       setPuzzle(data);
@@ -155,131 +138,144 @@ function App() {
     }
   }, [isAuthenticated, loadPuzzle]);
 
+  // Step-wise tier computation: Blitz (15 pts), Steady (10 pts), Clutch (5 pts)
+  const timerTier = useMemo(() => getTimerTier(timeLeft), [timeLeft]);
+  const progress = (timeLeft / ROUND_SECONDS) * 100;
+
+  const handleTimeout = useCallback(async () => {
+    if (isSubmittingRef.current || !puzzle || message) return;
+    isSubmittingRef.current = true;
+    setIsSubmitting(true);
+    setStreak(0);
+    setMessage({
+      type: 'timeout',
+      title: 'Time is up!',
+      body: 'Time expired! Checking solution...',
+    });
+
+    try {
+      if (isAuthenticated) {
+        const timeTakenMs = Date.now() - roundStartTime;
+        const res = await gameService.recordRound({
+          puzzleToken: puzzle.puzzleToken,
+          userAnswer: null,
+          timeLimitSeconds: ROUND_SECONDS,
+          timeTakenMs,
+          status: 'timeout',
+        });
+        const solution = res.data?.solution;
+        setMessage({
+          type: 'timeout',
+          title: 'Time is up!',
+          body:
+            solution !== undefined && solution !== null
+              ? `The missing digit was ${solution}. Keep trying!`
+              : 'Time expired! Keep trying on the next puzzle.',
+        });
+        if (res.success && res.data?.metrics) {
+          updateLocalMetrics(res.data.metrics);
+          setScore(res.data.metrics.total_score);
+          setStreak(res.data.streak ?? res.data.metrics.current_streak ?? 0);
+          setRounds(res.data.metrics.total_games ?? 0);
+          fetchLeaderboard();
+        }
+      }
+    } catch (err) {
+      console.warn('Could not record timeout round:', err.message);
+      setMessage({
+        type: 'timeout',
+        title: 'Time is up!',
+        body: 'Time expired! Keep trying on the next puzzle.',
+      });
+    } finally {
+      isSubmittingRef.current = false;
+      setIsSubmitting(false);
+    }
+  }, [fetchLeaderboard, isAuthenticated, message, puzzle, roundStartTime, updateLocalMetrics]);
+
   // 60-Second countdown timer
   useEffect(() => {
-    if (activePage !== 'play' || !isAuthenticated || loading || message || !puzzle) return undefined;
+    if (activePage !== 'play' || !isAuthenticated || loading || message || !puzzle || isSubmitting) {
+      return undefined;
+    }
     if (timeLeft <= 0) {
       handleTimeout();
       return undefined;
     }
     const timer = setInterval(() => setTimeLeft((value) => value - 1), 1000);
     return () => clearInterval(timer);
-  }, [activePage, isAuthenticated, loading, message, puzzle, timeLeft]);
+  }, [activePage, isAuthenticated, loading, message, puzzle, timeLeft, isSubmitting, handleTimeout]);
 
-  // Step-wise tier computation: Blitz (15 pts), Steady (10 pts), Clutch (5 pts)
-  const timerTier = useMemo(() => getTimerTier(timeLeft), [timeLeft]);
-  const progress = (timeLeft / ROUND_SECONDS) * 100;
+  const submitAnswer = useCallback(
+    async (digitToSubmit) => {
+      const finalAnswer = digitToSubmit !== undefined ? String(digitToSubmit) : answer;
+      if (!puzzle || message || isSubmittingRef.current || !/^\d$/.test(finalAnswer)) return;
 
-  const handleTimeout = async () => {
-    setMessage({
-      type: 'timeout',
-      title: 'Time is up!',
-      body: `The missing digit was ${puzzle?.solution}. Keep trying!`,
-    });
-    setStreak(0);
+      isSubmittingRef.current = true;
+      setIsSubmitting(true);
+      const timeTakenMs = Date.now() - roundStartTime;
 
-    if (isAuthenticated && puzzle) {
       try {
-        const timeTakenMs = Date.now() - roundStartTime;
         const res = await gameService.recordRound({
-          puzzleUrl: puzzle.question,
-          solution: puzzle.solution,
-          userAnswer: null,
-          isCorrect: false,
-          scoreAwarded: 0,
-          timeLimitSeconds: 60,
+          puzzleToken: puzzle.puzzleToken,
+          userAnswer: Number(finalAnswer),
+          timeLimitSeconds: ROUND_SECONDS,
           timeTakenMs,
-          status: 'timeout',
+          status: 'completed',
         });
-        if (res.success && res.data?.metrics) {
-          updateLocalMetrics(res.data.metrics);
-          setScore(res.data.metrics.total_score);
+
+        if (res.success && res.data) {
+          const {
+            isCorrect,
+            pointsAdded = 0,
+            basePoints = 0,
+            streakBonus = 0,
+            solution,
+            streak: serverStreak,
+            metrics,
+          } = res.data;
+
+          if (metrics) {
+            updateLocalMetrics(metrics);
+            setScore(metrics.total_score ?? 0);
+            setRounds(metrics.total_games ?? 0);
+          } else {
+            setRounds((value) => value + 1);
+          }
+
+          if (isCorrect) {
+            setStreak(serverStreak ?? metrics?.current_streak ?? 0);
+            setMessage({
+              type: 'success',
+              title: '🎉 Great solve!',
+              body: `+${pointsAdded} points awarded! (Speed tier: +${basePoints} pts, Streak bonus: +${streakBonus} pts)`,
+            });
+          } else {
+            setStreak(serverStreak ?? 0);
+            setIsShaking(true);
+            setTimeout(() => setIsShaking(false), 500);
+            setMessage({
+              type: 'wrong',
+              title: '❌ Not quite!',
+              body:
+                solution !== undefined && solution !== null
+                  ? `Streak reset! The missing digit was ${solution}. Take another look and try the next puzzle.`
+                  : 'Streak reset! Take another look at the symbols and try the next puzzle.',
+            });
+          }
+
           fetchLeaderboard();
         }
       } catch (err) {
-        console.warn('Could not record timeout round:', err.message);
+        console.warn('Failed to record round:', err.message);
+        setError(err.message || 'Could not submit answer. Please try again.');
+      } finally {
+        isSubmittingRef.current = false;
+        setIsSubmitting(false);
       }
-    }
-  };
-
-  const submitAnswer = async (digitToSubmit) => {
-    const finalAnswer = digitToSubmit !== undefined ? String(digitToSubmit) : answer;
-    if (!puzzle || message || !/^\d$/.test(finalAnswer)) return;
-
-    const isCorrect = Number(finalAnswer) === Number(puzzle.solution);
-    const timeTakenMs = Date.now() - roundStartTime;
-
-    if (isCorrect) {
-      // Award 15, 10, or 5 points based on the 60s step timer + streak bonus
-      const { points, basePoints, streakBonus, nextStreak } = calculateRoundScore(timeLeft, streak);
-      const nextScore = score + points;
-
-      setScore(nextScore);
-      setStreak(nextStreak);
-      setRounds((value) => value + 1);
-
-      setMessage({
-        type: 'success',
-        title: '🎉 Great solve!',
-        body: `+${points} points awarded! (Speed tier: +${basePoints} pts, Streak bonus: +${streakBonus} pts)`,
-      });
-
-      // Save to PostgreSQL via Prisma backend
-      if (isAuthenticated) {
-        try {
-          const res = await gameService.recordRound({
-            puzzleUrl: puzzle.question,
-            solution: puzzle.solution,
-            userAnswer: Number(finalAnswer),
-            isCorrect: true,
-            scoreAwarded: points,
-            timeLimitSeconds: 60,
-            timeTakenMs,
-            status: 'completed',
-          });
-          if (res.success && res.data?.metrics) {
-            updateLocalMetrics(res.data.metrics);
-            setScore(res.data.metrics.total_score);
-            fetchLeaderboard();
-          }
-        } catch (err) {
-          console.warn('Failed to record round:', err.message);
-        }
-      }
-    } else {
-      setStreak(0);
-      setIsShaking(true);
-      setTimeout(() => setIsShaking(false), 500);
-
-      setMessage({
-        type: 'wrong',
-        title: '❌ Not quite!',
-        body: 'Streak reset! Take another look at the symbols and try the next puzzle.',
-      });
-
-      if (isAuthenticated) {
-        try {
-          const res = await gameService.recordRound({
-            puzzleUrl: puzzle.question,
-            solution: puzzle.solution,
-            userAnswer: Number(finalAnswer),
-            isCorrect: false,
-            scoreAwarded: 0,
-            timeLimitSeconds: 60,
-            timeTakenMs,
-            status: 'failed',
-          });
-          if (res.success && res.data?.metrics) {
-            updateLocalMetrics(res.data.metrics);
-            setScore(res.data.metrics.total_score);
-            fetchLeaderboard();
-          }
-        } catch (err) {
-          console.warn('Failed to record round:', err.message);
-        }
-      }
-    }
-  };
+    },
+    [answer, fetchLeaderboard, message, puzzle, roundStartTime, updateLocalMetrics]
+  );
 
   // Keyboard shortcut listener: Enter to continue or submit
   useEffect(() => {
@@ -288,20 +284,20 @@ function App() {
       if (e.key === 'Enter') {
         if (message) {
           loadPuzzle();
-        } else if (/^\d$/.test(answer)) {
+        } else if (/^\d$/.test(answer) && !isSubmitting) {
           submitAnswer();
         }
-      } else if (!message && /^[0-9]$/.test(e.key)) {
+      } else if (!message && !isSubmitting && /^[0-9]$/.test(e.key)) {
         setAnswer(e.key);
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [activePage, isAuthenticated, message, answer, loadPuzzle]);
+  }, [activePage, isAuthenticated, message, answer, isSubmitting, loadPuzzle, submitAnswer]);
 
   // Step-wise hint unlocking with IMMEDIATE SCORE DEDUCTION in PostgreSQL (10, 15, 20 pts)
   const unlockNextHint = async () => {
-    if (!puzzle || hintLevel >= 3 || message) return;
+    if (!puzzle || hintLevel >= 3 || message || isSubmittingRef.current) return;
     const nextLevel = hintLevel + 1;
     const costs = { 1: 10, 2: 15, 3: 20 };
     const cost = costs[nextLevel];
@@ -323,33 +319,28 @@ function App() {
       return;
     }
 
-    const sol = Number(puzzle.solution);
-    let hintText = '';
-    if (nextLevel === 1) {
-      hintText = sol <= 4 ? 'Range: The digit is LOW (0 to 4).' : 'Range: The digit is HIGH (5 to 9).';
-    } else if (nextLevel === 2) {
-      hintText = sol % 2 === 0 ? 'Parity: The missing digit is EVEN.' : 'Parity: The missing digit is ODD.';
-    } else if (nextLevel === 3) {
-      const alt = (sol + 2) % 10;
-      hintText = `Elimination: It is either ${Math.min(sol, alt)} or ${Math.max(sol, alt)}.`;
-    }
-
     try {
-      // Immediately deduct from PostgreSQL user_metrics!
-      const res = await gameService.useHint(nextLevel);
+      // Immediately deduct from PostgreSQL user_metrics and retrieve authoritative hintText!
+      const res = await gameService.useHint(nextLevel, puzzle.puzzleToken);
       if (res.success && res.data) {
+        const costDeducted = res.data.costDeducted ?? cost;
         setScore(res.data.total_score);
-        updateLocalMetrics(res.data.metrics);
+        if (res.data.metrics) {
+          updateLocalMetrics(res.data.metrics);
+        }
         fetchLeaderboard();
-      }
 
-      setHintLevel(nextLevel);
-      setUnlockedHints((prev) => [...prev, { level: nextLevel, text: hintText, cost }]);
-      setHintNotice({
-        type: 'success',
-        text: `💡 Option ${nextLevel} Hint Unlocked! -${cost} pts deducted immediately from your total score.`,
-        cost,
-      });
+        setHintLevel(nextLevel);
+        setUnlockedHints((prev) => [
+          ...prev,
+          { level: nextLevel, text: res.data.hintText, cost: costDeducted },
+        ]);
+        setHintNotice({
+          type: 'success',
+          text: `💡 Option ${nextLevel} Hint Unlocked! -${costDeducted} pts deducted immediately from your total score.`,
+          cost: costDeducted,
+        });
+      }
     } catch (err) {
       setHintNotice({
         type: 'error',
@@ -461,6 +452,7 @@ function App() {
             ) : (
               <PlayPage
                 loading={loading}
+                isSubmitting={isSubmitting}
                 error={error}
                 puzzle={puzzle}
                 answer={answer}
@@ -612,6 +604,7 @@ function LoginRequiredScreen({ onLogin, onRegister }) {
 
 function PlayPage({
   loading,
+  isSubmitting,
   error,
   puzzle,
   answer,
@@ -769,7 +762,7 @@ function PlayPage({
                 onChange={(event) => setAnswer(event.target.value.replace(/\D/g, ''))}
                 placeholder="?"
                 aria-label="Your answer"
-                disabled={Boolean(message) || loading}
+                disabled={Boolean(message) || loading || isSubmitting}
               />
               <span>/ 1 digit</span>
             </div>
@@ -785,7 +778,7 @@ function PlayPage({
                 onClick={() => {
                   setAnswer(String(digit));
                 }}
-                disabled={Boolean(message) || loading}
+                disabled={Boolean(message) || loading || isSubmitting}
               >
                 {digit}
               </button>
@@ -798,7 +791,7 @@ function PlayPage({
               type="button"
               className="keypad-action-btn clear"
               onClick={() => setAnswer('')}
-              disabled={!answer || Boolean(message) || loading}
+              disabled={!answer || Boolean(message) || loading || isSubmitting}
             >
               ⌫ Clear
             </button>
@@ -806,9 +799,9 @@ function PlayPage({
               type="button"
               className="keypad-action-btn submit"
               onClick={() => submitAnswer()}
-              disabled={!answer || Boolean(message) || loading}
+              disabled={!answer || Boolean(message) || loading || isSubmitting}
             >
-              Submit Answer <span>→</span>
+              {isSubmitting ? 'Checking…' : <>Submit Answer <span>→</span></>}
             </button>
           </div>
 
@@ -823,7 +816,7 @@ function PlayPage({
                   type="button"
                   className="step-hint-trigger"
                   onClick={unlockNextHint}
-                  disabled={Boolean(message) || score < (hintLevel === 0 ? 10 : hintLevel === 1 ? 15 : 20)}
+                  disabled={Boolean(message) || isSubmitting || score < (hintLevel === 0 ? 10 : hintLevel === 1 ? 15 : 20)}
                 >
                   Unlock Option {hintLevel + 1} Hint (−{hintLevel === 0 ? 10 : hintLevel === 1 ? 15 : 20} pts from total score)
                 </button>

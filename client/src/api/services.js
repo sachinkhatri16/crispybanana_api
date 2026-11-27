@@ -10,7 +10,7 @@ export const authService = {
 
 export const gameService = {
   getPuzzle: () => api.get('/game/puzzle'),
-  useHint: (hintLevel) => api.post('/game/hint', { hintLevel }),
+  useHint: (hintLevel, puzzleToken) => api.post('/game/hint', { hintLevel, puzzleToken }),
   recordRound: (roundData) => api.post('/game/round', roundData),
   getLeaderboard: () => api.get('/leaderboard'),
 };
