@@ -12,6 +12,7 @@ export async function apiRequest(endpoint, options = {}) {
   }
 
   const config = {
+    credentials: 'include',
     ...options,
     headers,
   };
@@ -37,6 +38,7 @@ export async function apiRequest(endpoint, options = {}) {
 export const authApi = {
   register: (payload) => apiRequest('/auth/register', { method: 'POST', body: JSON.stringify(payload) }),
   login: (payload) => apiRequest('/auth/login', { method: 'POST', body: JSON.stringify(payload) }),
+  logout: () => apiRequest('/auth/logout', { method: 'POST' }),
   getMe: () => apiRequest('/auth/me', { method: 'GET' }),
 };
 

@@ -1,8 +1,49 @@
+/**
+ * ============================================================================
+ * @project     Banana Rush Enterprise Puzzle Application
+ * @unit        CIS046-3 Software For Enterprise (Assignment 1)
+ * @author      Sachin Khatri
+ * @file        server/src/controllers/auth.controller.js
+ *
+ * @description Handles virtual identity authentication (register, login,
+ *              logout, session profile) using bcrypt password hashing,
+ *              stateless JWT tokens, and secure HTTP-Only cookies.
+ *
+ * @references
+ * 1. Password Security Standards:
+ *    OWASP Foundation, "Password Storage Cheat Sheet",
+ *    https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html
+ * 2. JSON Web Token Standard:
+ *    Jones, M., Bradley, J., & Sakimura, N. (2015), "JSON Web Token (JWT)",
+ *    IETF RFC 7519, https://datatracker.ietf.org/doc/html/rfc7519
+ * 3. HTTP-Only Cookies & CSRF Defense:
+ *    MDN Web Docs / RFC 6265bis, "Using HTTP cookies (HttpOnly, Secure, SameSite)",
+ *    https://developer.mozilla.org/en-US/docs/Web/HTTP/Cookies
+ * 4. Generative AI Acknowledgement:
+ *    Portions of HTTP-Only cookie configuration and refactoring were developed
+ *    with iterative assistance from AI coding assistants.
+ * ============================================================================
+ */
 import bcrypt from 'bcryptjs';
 import prisma from '../config/prisma.js';
 import { generateToken } from '../utils/jwt.utils.js';
 import { sendSuccess, sendError } from '../utils/response.utils.js';
 import logger from '../utils/logger.js';
+
+const TOKEN_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+
+const getCookieOptions = () => ({
+  httpOnly: true, // Prevents access via document.cookie (immunizes against XSS token theft)
+  secure: process.env.NODE_ENV === 'production',
+  sameSite: 'strict', // Mitigates Cross-Site Request Forgery (CSRF)
+});
+
+const setAuthCookie = (res, token) => {
+  res.cookie('token', token, {
+    ...getCookieOptions(),
+    maxAge: TOKEN_MAX_AGE_MS,
+  });
+};
 
 export const register = async (req, res, next) => {
   try {
@@ -61,6 +102,7 @@ export const register = async (req, res, next) => {
     });
 
     const token = generateToken({ userId: newUser.id, username: newUser.username });
+    setAuthCookie(res, token);
     logger.info(`New user registered: ${newUser.username} (id: ${newUser.id}) with 100 free points`);
 
     return sendSuccess(
@@ -116,6 +158,7 @@ export const login = async (req, res, next) => {
     const { password_hash, user_metrics, ...safeUser } = user;
 
     const token = generateToken({ userId: user.id, username: user.username });
+    setAuthCookie(res, token);
     logger.info(`User logged in: ${user.username} (id: ${user.id})`);
 
     return sendSuccess(
@@ -140,6 +183,11 @@ export const login = async (req, res, next) => {
   } catch (error) {
     next(error);
   }
+};
+
+export const logout = async (req, res) => {
+  res.clearCookie('token', getCookieOptions());
+  return sendSuccess(res, null, 'Logged out successfully!');
 };
 
 export const getMe = async (req, res, next) => {
