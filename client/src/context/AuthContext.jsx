@@ -1,3 +1,27 @@
+/**
+ * ============================================================================
+ * @project     Banana Rush Enterprise Puzzle Application
+ * @unit        CIS046-3 Software For Enterprise (Assignment 1)
+ * @author      Sachin Khatri
+ * @file        client/src/context/AuthContext.jsx
+ *
+ * @description React authentication context managing virtual identity state,
+ *              session revalidation (/auth/me), login, registration, and
+ *              logout (clearing both client state and HTTP-Only cookie).
+ *
+ * @references
+ * 1. React Context & Hooks Documentation:
+ *    Meta Open Source, "React Reference: createContext & useCallback",
+ *    https://react.dev/reference/react/createContext
+ * 2. Password & Session Security Standards:
+ *    OWASP Foundation, "Password Storage Cheat Sheet" & "Session Management
+ *    Cheat Sheet", https://cheatsheetseries.owasp.org/
+ * 3. JSON Web Token & HTTP-Only Cookies:
+ *    IETF RFC 7519 (JWT) & MDN Web Docs HTTP Cookies
+ * 4. Generative AI Acknowledgement:
+ *    Async logout cookie-clearing flow and documentation header assisted by AI.
+ * ============================================================================
+ */
 import { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import { authService } from '../api/services.js';
 
@@ -66,11 +90,17 @@ export function AuthProvider({ children }) {
     throw new Error(res.message || 'Registration failed');
   }, []);
 
-  const logout = useCallback(() => {
-    setUser(null);
-    setToken(null);
-    localStorage.removeItem('banana_token');
-    localStorage.removeItem('banana_user');
+  const logout = useCallback(async () => {
+    try {
+      await authService.logout();
+    } catch {
+      // Always clear local session state even if the network logout request fails
+    } finally {
+      setUser(null);
+      setToken(null);
+      localStorage.removeItem('banana_token');
+      localStorage.removeItem('banana_user');
+    }
   }, []);
 
   const updateLocalMetrics = useCallback((metrics) => {
